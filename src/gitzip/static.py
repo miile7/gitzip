@@ -1,0 +1,2 @@
+NAME = "gitzip"
+SLUG = "gitzip"
