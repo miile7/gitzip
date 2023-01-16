@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "gitzip"
-version = "2.0.0"
+version = "2.0.1"
 description = "A small python program to export files changed between git commits or branches to a zip file retaining the directory structure."
 authors = ["miile7"]
 readme = "README.md"

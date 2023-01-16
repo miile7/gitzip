@@ -5,16 +5,42 @@ the directory structure.
 
 ## gitzip usage
 
-Navigate into your repositorys base directory. Then execute the following command.
+`gitzip` allows to copy all files that changed between two commits (or branches) into a
+zip file.
+
+Expect a git repository being at commit `0c321f2`. If two new files are created, e.g.
+`README.md` and `docs/screenshot.jpg`, `git status` gives:
+
+```bash
+$ git status
+On branch master
+
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+        modified:   README.md
+        new:        docs/screenshot.jpg
 
 ```
-python -m gitzip export.zip 0c321f2 master
+
+After committing those changes, the command
+
+```
+python -m gitzip export.zip 0c321f2
 ```
 
-This will create a `export.zip` file containing all files that changed between commit
-`0c321f2` and the current `master` branch. The files will have the contents of the
-current branch/commit that is checked out in your current repository. If the changed
-files are in a subdirectory, this subdirectory is created in the zip file.
+will create a `export.zip` file. This file contains all files that changed between commit
+`0c321f2` and the current `master` branch. So in the given example, the zip file will
+have the following structure:
+
+```
+📦export.zip
+ ┣ 📂docs
+ ┃ ┗ 📜screenshot.jpg
+ ┗ 📜README.md
+```
+
+The files will have the contents that are currently checked out in the repository.
 
 ## Installation
 

@@ -2,8 +2,9 @@ from argparse import ArgumentParser, Namespace
 from logging import DEBUG, INFO, WARNING, Logger, basicConfig, getLogger
 from os import getcwd
 from pathlib import Path
+from re import compile
 from subprocess import PIPE, Popen
-from typing import Iterable, List, Optional, TypedDict, Union
+from typing import Iterable, List, Optional, Tuple, TypedDict, Union
 from typing_extensions import Unpack
 from zipfile import ZIP_DEFLATED, ZipFile
 
@@ -12,6 +13,10 @@ from gitzip.static import NAME, SLUG
 
 
 DEFAULT_LOG_LEVEL = WARNING
+
+GIT_VERSION_REGEXP = compile(r"git\s*version((?:[\d]+\.){2}[\d]+)")
+GIT_BRANCH_SHOW_CURRENT_MIN_VER = (2, 22)
+CURRENT_HEAD_SYMBOLS = ("HEAD", )
 
 EXIT_CODE_NOT_ENOUGH_ARGUMENTS = 2
 EXIT_CODE_FILE_EXISTS = 4
@@ -22,8 +27,8 @@ logger = getLogger(SLUG)
 
 class ParserArgs(TypedDict, total=False):
     zip_path: Path
-    from_commit: str
-    to_commit: str
+    commit: str
+    commit2: str
     text_file: Path
     force: bool
 
@@ -32,25 +37,73 @@ class MissingToCommitException(Exception):
     pass
 
 
-def get_files_from_git(from_commit: Optional[str], to_commit: str) -> Iterable[str]:
-    cmd: List[str] = ["git", "diff"]
+class VersionNotFound(Exception):
+    pass
 
-    if from_commit:
-        cmd.append(from_commit)
 
-    cmd += [to_commit, "--name-only"]
-
+def exec(cmd: List[str]) -> str:
     logger.info(f"Executing '{' '.join(cmd)}'")
     process = Popen(cmd, stdout=PIPE)
 
     if process.stdout is None:
         raise Exception(
-            "Could not grab output of git command. This cannot be fixed without "
-            "touching the code"
+            f"Could not grab output of command '{' '.join(cmd)}'. This cannot be fixed "
+            "without touching the code."
         )
 
     out = process.stdout.read().decode("utf-8")
     logger.info(f"Command showed:\n$ {' '.join(cmd)}\n{out}")
+
+    return out
+
+
+def get_git_version() -> Tuple[int, ...]:
+    logger.info("Retrieving git version")
+
+    version_output = exec(["git", "--version"])
+
+    match = GIT_VERSION_REGEXP.match(version_output)
+    if match is None:
+        raise VersionNotFound("Could not find git version.")
+
+    version_str = match.group(1)
+    return tuple(map(int, version_str.split(".")))
+
+
+def get_current_branch() -> str:
+    git_version: Tuple[int, ...]
+    try:
+        git_version = get_git_version()
+    except (VersionNotFound, IndexError) as e:
+        logger.warning(e)
+        git_version = (0, 0, 0)
+
+    cmd: List[str]
+    if (
+        len(git_version) >= len(GIT_BRANCH_SHOW_CURRENT_MIN_VER) and
+        git_version[0] > GIT_BRANCH_SHOW_CURRENT_MIN_VER[0] and
+        git_version[1] > GIT_BRANCH_SHOW_CURRENT_MIN_VER[1]
+    ):
+        cmd = ["git", "branch", "--show-current"]
+    else:
+        cmd = ["git", "rev-parse", "--abbrev-ref", "HEAD"]
+
+    return exec(cmd).strip()
+
+
+def get_current_commit() -> str:
+    return exec(["git", "rev-parse", "HEAD"]).strip()
+
+
+def get_files_from_git(commit: str, commit2: Optional[str]) -> Iterable[str]:
+    cmd: List[str] = ["git", "diff", commit]
+
+    if commit2:
+        cmd.append(commit2)
+
+    cmd += ["--name-only"]
+
+    out = exec(cmd)
 
     # remove empty inputs, split the output
     return filter(lambda x: x != "", out.split("\n"))
@@ -115,17 +168,45 @@ def run(args: Namespace) -> None:
         files = open(args.text_file, "r", encoding="utf-8")
     else:
         logger.info("Taking files from git diff")
-        if not args.to_commit:
+        if not args.commit:
             raise MissingToCommitException(
-                "No to_commit is given and no text file is specified."
+                "No commit is given and no text file is specified."
             )
 
-        if args.from_commit:
-            zip_comment = f"Files from git diff {args.from_commit}..{args.to_commit}"
+        if args.commit:
+            zip_comment = f"Files from git diff {args.commit}..{args.commit2}"
         else:
-            zip_comment = f"Files from git diff HEAD..{args.to_commit}"
+            zip_comment = f"Files from git diff HEAD..{args.commit}"
 
-        files = get_files_from_git(args.from_commit, args.to_commit)
+        if args.commit2:
+            current_branch: str
+            try:
+                current_branch = get_current_branch()
+            except Exception as e:
+                logger.exception(e)
+                current_branch = ""
+
+            current_commit: str
+            try:
+                current_commit = get_current_commit()
+            except Exception as e:
+                logger.exception(e)
+                current_commit = ""
+
+            if (
+                args.commit2 not in CURRENT_HEAD_SYMBOLS and
+                args.commit2 not in current_commit and
+                args.commit2 != current_branch
+            ):
+                logger.warn(
+                    f"Note: The files are taken from the current file tree, NOT from "
+                    "the git repository. If the commit2 is not the same as your "
+                    "HEAD (the current files in your repository) this means, that the "
+                    "diff is determined by the commit2 but the files content is still "
+                    "taken from the current HEAD."
+                )
+
+        files = get_files_from_git(args.commit, args.commit2)
 
     if Logger.root.level <= INFO:
         files = tuple(files)
@@ -166,16 +247,19 @@ def get_arg_parser() -> ArgumentParser:
         type=Path,
     )
     parser.add_argument(
-        "to_commit",
-        help=("The end commit or branch to compare against, ignore in text mode (-t)."),
+        "commit",
+        help=(
+            "The first reference (commit, branch, ...) to compare against, ignore this "
+            "for text mode (-t)."
+        ),
         type=str,
         nargs="?",
     )
     parser.add_argument(
-        "from_commit",
+        "commit2",
         help=(
-            "The starting commit or branch to compare against, ignore in text mode "
-            "(-t)."
+            "The second reference (commit, branch, ...) to compare against, if not "
+            "given, HEAD is used, ignore this for text mode (-t)."
         ),
         type=str,
         nargs="?",
@@ -226,7 +310,7 @@ def main(**kwargs: Unpack[ParserArgs]) -> None:
         run(args)
     except MissingToCommitException as e:
         parser.print_usage()
-        print(f"gitzip: error: {e} Either specify -t or to_commit.")
+        print(f"gitzip: error: {e} Either specify -t or commit.")
         exit(EXIT_CODE_NOT_ENOUGH_ARGUMENTS)
     except FileExistsError as e:
         print(f"gitzip: error: {str(e)} Use -f to overwrite existing files.")
